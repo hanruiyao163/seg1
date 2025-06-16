@@ -1,0 +1,1 @@
+python .\labelme2voc.py .\train\json_only\ .\train\output\ --labels .\labels.txt --noobject
