@@ -1,0 +1,9 @@
+__ignore__
+_background_
+Book
+Inkiness
+Vitium
+Crease
+defaced
+Patch
+Signature
