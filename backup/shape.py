@@ -92,7 +92,7 @@ def shapes_to_label(img_shape, shapes, label_name_to_value):
         else:
             mask = shape_to_mask(img_shape[:2], points, shape_type, pre_mask=pre_mask)
         
-        pre_mask = mask if pre_mask is None else pre_mask | mask
+        pre_mask = (mask if pre_mask is None else pre_mask) & ~mask
 
         cls[mask] = cls_id
         ins[mask] = ins_id
