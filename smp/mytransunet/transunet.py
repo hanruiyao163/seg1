@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from einops import rearrange, repeat
 from vision_transformer import VisionTransformer
+import numpy as np
 
 class EncoderBottleneck(nn.Module):
     def __init__(self, in_channels, out_channels, stride=1, channel_factor=1):
@@ -78,7 +79,7 @@ class VIT_TORCH(nn.Module):
         del self.vit.heads
 
 class Encoder(nn.Module):
-    def __init__(self, img_size, in_channels, out_channels, head_num, mlp_dim, block_num, patch_dim):
+    def __init__(self, img_size, in_channels, out_channels, num_heads=8, mlp_dim=512, num_layers=12):
         super().__init__()
 
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=7, stride=2, padding=3, bias=False)
@@ -89,13 +90,14 @@ class Encoder(nn.Module):
         self.encoder2 = EncoderBottleneck(out_channels * 2, out_channels * 4, stride=2)
         self.encoder3 = EncoderBottleneck(out_channels * 4, out_channels * 8, stride=2)
 
-        self.n_patch = img_size // patch_dim
-        self.vit = VisionTransformer(image_size=img_size,
-                                     patch_size=16,
-                                     num_layers=12,
-                                     num_heads=12,
-                                     hidden_dim=768,
-                                     mlp_dim=1024)
+        self.vit_img_size = img_size // 16
+        self.vit = VisionTransformer(image_size=self.vit_img_size,
+                                     patch_size=1,
+                                     num_layers=num_layers,
+                                     num_heads=num_heads,
+                                     hidden_dim=out_channels * 8,
+                                     mlp_dim=mlp_dim,
+                                     in_channels=out_channels * 8)
 
         self.conv2 = nn.Conv2d(out_channels * 8, 512, kernel_size=3, stride=1, padding=1)
         self.norm2 = nn.BatchNorm2d(512)
@@ -108,9 +110,14 @@ class Encoder(nn.Module):
         x2 = self.encoder1(x1)
         x3 = self.encoder2(x2)
         x = self.encoder3(x3)
+        print("encoder", x.shape)
 
-        x = self.vit(x)
-        x = rearrange(x, "b (x y) c -> b c x y", x=self.vit_img_dim, y=self.vit_img_dim)
+        hidden_states = self.vit(x)
+        B, n_patch, hidden = hidden_states.size()  # reshape from (B, n_patch, hidden) to (B, h, w, hidden)
+        print("n_patch", n_patch)
+        h, w = int(np.sqrt(n_patch)), int(np.sqrt(n_patch))
+        x = hidden_states.contiguous().view(B, hidden, h, w)
+        print("vit", x.shape)
 
         x = self.conv2(x)
         x = self.norm2(x)
@@ -118,7 +125,45 @@ class Encoder(nn.Module):
 
         return x, x1, x2, x3
 
+class Decoder(nn.Module):
+    def __init__(self, out_channels, num_classes):
+        super().__init__()
+
+        self.decoder1 = DecoderBottleneck(out_channels * 8, out_channels * 2)
+        self.decoder2 = DecoderBottleneck(out_channels * 4, out_channels)
+        self.decoder3 = DecoderBottleneck(out_channels * 2, int(out_channels * 1 / 2))
+        self.decoder4 = DecoderBottleneck(int(out_channels * 1 / 2), int(out_channels * 1 / 8))
+
+        self.conv1 = nn.Conv2d(int(out_channels * 1 / 8), num_classes, kernel_size=1)
+
+    def forward(self, x, x1, x2, x3):
+        x = self.decoder1(x, x3)
+        x = self.decoder2(x, x2)
+        x = self.decoder3(x, x1)
+        x = self.decoder4(x)
+        x = self.conv1(x)
+
+        return x
+    
+class TransUNet(nn.Module):
+    def __init__(self, img_size, in_channels, out_channels, num_heads, mlp_dim, num_layers, num_classes):
+        super().__init__()
+
+        self.encoder = Encoder(img_size=img_size, in_channels=in_channels, out_channels=out_channels,
+                               num_heads=num_heads, mlp_dim=mlp_dim, num_layers=num_layers)
+
+        self.decoder = Decoder(out_channels, num_classes)
+
+    def forward(self, x):
+        x, x1, x2, x3 = self.encoder(x)
+        x = self.decoder(x, x1, x2, x3)
+
+        return x
+
 if __name__ == "__main__":
-    x = torch.randn(1, 3, 256, 256)
-    model = DecoderBottleneck(3, 128)
-    print(model(x).shape)
+    x = torch.randn(1, 3, 512, 512)
+    # model = DecoderBottleneck(3, 128)
+    # print(model(x).shape)
+    model = TransUNet(img_size=512, in_channels=3, out_channels=128, num_heads=8, mlp_dim=512, num_layers=12, num_classes=11)
+    y = model(x)
+    print(y.shape)
